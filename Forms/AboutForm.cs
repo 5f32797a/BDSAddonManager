@@ -3,13 +3,9 @@ namespace AddonManager.Forms
 {
     public partial class AboutForm : Form
     {
-        public AboutForm()
-        {
-            InitializeComponent();
-            this.Text = "ABOUT";
-            aboutLabel.Text = about;
-        }
-        string about =
+        // Using a static readonly string is more efficient as it's created only once
+        // instead of per-instance.
+        private static readonly string AboutText =
 @"This tool is designed to simplify the management of addons for self-hosted Minecraft: Bedrock Edition servers.
 
 ⚠️ Please note: Modifying an existing world may lead to unexpected results. It's recommended to create a backup before proceeding.
@@ -28,5 +24,13 @@ This application includes a variety of icons and media elements. For a detailed 
 
 Disclaimer:
 This is not an official Minecraft product and is neither endorsed nor affiliated with Mojang or Microsoft.";
+
+        public AboutForm()
+        {
+            InitializeComponent();
+            this.Text = "ABOUT";
+            // Set the label text from the static readonly field.
+            aboutLabel.Text = AboutText;
+        }
     }
 }

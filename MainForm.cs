@@ -5,8 +5,8 @@ namespace AddonManager
 {
     public partial class MainForm : Form
     {
-        private Form activeForm;
-        public Button ConsoleButton { get; set; }
+        private Form? activeForm;
+        public Button ConsoleButton { get; private set; }
 
         public MainForm()
         {
@@ -14,10 +14,10 @@ namespace AddonManager
             this.Text = Program.title;
             logoLabel.Text = Program.title;
             versionLabel.Text = Program.version;
-            Logger.Log(Program.title + " " + Program.version + " loaded!");
+            Logger.Log($"{Program.title} {Program.version} loaded!");
 
             //Start on directory screen
-            OpenChildForm(new Forms.DirectoryForm(), null);
+            OpenChildForm(new DirectoryForm(), null);
             ConsoleButton = consoleButton;
             if (SettingsForm.hideConsoleTab)
             {
@@ -25,11 +25,12 @@ namespace AddonManager
             }
         }
         // Opens a child form within a parent form, replacing any currently open child form
-        private void OpenChildForm(Form childForm, object buttonSender)
+        private void OpenChildForm(Form childForm, object? buttonSender)
         {
             if (activeForm != null)
             {
                 activeForm.Close();
+                activeForm.Dispose(); // Ensure resources are released
             }
             activeForm = childForm;
             childForm.TopLevel = false;
@@ -45,54 +46,78 @@ namespace AddonManager
         // Link to the project's page when clicking the logo
         private void logoPictureBox_Click(object sender, EventArgs e) 
         {
-            Process.Start(new ProcessStartInfo { FileName = "https://github.com/DragonTech26/BDSAddonManager", UseShellExecute = true });
+            try
+            {
+                Process.Start(new ProcessStartInfo { FileName = "https://github.com/DragonTech26/BDSAddonManager", UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Could not open link: {ex.Message}", "ERROR");
+                MessageBox.Show("Could not open the project's GitHub page.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
         private void directoryButton_Click(object sender, EventArgs e)
         {
-            OpenChildForm(new Forms.DirectoryForm(), sender);
+            OpenChildForm(new DirectoryForm(), sender);
         }
         private void rpButton_Click(object sender, EventArgs e)
         {
-            OpenChildForm(new Forms.ResourcePackForm(), sender);
+            OpenChildForm(new ResourcePackForm(), sender);
         }
         private void bpButton_Click(object sender, EventArgs e)
         {
-            OpenChildForm(new Forms.BehaviorPackForm(), sender);
+            OpenChildForm(new BehaviorPackForm(), sender);
         }
         private void consoleButton_Click(object sender, EventArgs e)
         {
-            OpenChildForm(new Forms.ConsoleForm(), sender);
+            OpenChildForm(new ConsoleForm(), sender);
         }
         private void infoButton_Click(object sender, EventArgs e)
         {
-            OpenChildForm(new Forms.AboutForm(), sender);
+            OpenChildForm(new AboutForm(), sender);
         }
         private void settingsButton_Click(object sender, EventArgs e)
         {
-            OpenChildForm(new Forms.SettingsForm(this), sender);
+            OpenChildForm(new SettingsForm(this), sender);
         }
         // If a world is selected, prompt the user for confirmation to save pack changes
         private void saveButton_Click(object sender, EventArgs e)
         {
-            if (DirectoryForm.worldLocation == string.Empty)
+            // Use IsNullOrEmpty for robust checking.
+            // Note: The static access to DirectoryForm.worldLocation creates tight coupling.
+            // A better design would involve a shared state/service object.
+            if (string.IsNullOrEmpty(DirectoryForm.worldLocation))
             {
-                MessageBox.Show("Error: No world selected!", "Save error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                Logger.Log("Save: No world selected.", "ERROR");
+                MessageBox.Show("No world has been loaded. Please select directories and validate first.", "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Logger.Log("Save failed: No world selected or validated.", "ERROR");
                 return;
             }
-            DialogResult result = MessageBox.Show("Save pack changes to " + DirectoryForm.worldName + "?", "Save Confirmation", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+            string worldNameToDisplay = string.IsNullOrEmpty(DirectoryForm.worldName) ? "the selected world" : DirectoryForm.worldName;
+            DialogResult result = MessageBox.Show($"Save pack changes to '{worldNameToDisplay}'?", "Save Confirmation", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            
             if (result == DialogResult.Yes)
             {
                 Cursor.Current = Cursors.WaitCursor;
-                JsonParser.SaveToJson();
-                MessageBox.Show("World pack(s) saved!", "Success!", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                Logger.Log("Active world packs have successfully saved to disk!");
-                Cursor.Current = Cursors.Default;
+                try
+                {
+                    JsonParser.SaveToJson();
+                    MessageBox.Show("World pack configuration saved successfully!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Logger.Log("Active world packs have successfully saved to disk!");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"Failed to save pack data: {ex.Message}", "ERROR");
+                    MessageBox.Show($"An error occurred while saving: {ex.Message}", "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                finally
+                {
+                    Cursor.Current = Cursors.Default;
+                }
             }
             else
             {
-                Logger.Log("Save: Save cancelled.");
-                return;
+                Logger.Log("Save operation was cancelled by the user.");
             }
         }
     }

@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using AddonManager.Forms;
@@ -15,209 +16,257 @@ namespace AddonManager
         public Image? pack_icon { get; set; }
         public string? type { get; set; }
     }
+    
     public class ResultLists
     {
-        public static List<ManifestInfo>? rpList { get; set; } = new List<ManifestInfo>(); // List of all detected resource packs
-        public static List<ManifestInfo>? bpList { get; set; } = new List<ManifestInfo>(); // List of all detected behavior packs
-        public static List<ManifestInfo>? currentlyActiveRpList { get; set; } = new List<ManifestInfo>(); // Simple list of active resource packs (pack id, version)
-        public static List<ManifestInfo>? currentlyActiveBpList { get; set; } = new List<ManifestInfo>(); // Simple list of active behavior packs (pack id, version)
-        public static List<ManifestInfo>? activeRpList { get; set; } = new List<ManifestInfo>(); // List of currently active resource packs (full - all data)
-        public static List<ManifestInfo>? activeBpList { get; set; } = new List<ManifestInfo>(); // List of currently active behavior packs (full - all data)
-        public static List<ManifestInfo>? inactiveRpList { get; set; } = new List<ManifestInfo>(); // List of currently inactive resource packs (full - all data)
-        public static List<ManifestInfo>? inactiveBpList { get; set; } = new List<ManifestInfo>(); // List of currently inactive behavior packs (full - all data)
+        // Use thread-safe bags for initial collection from Parallel.ForEach
+        public static ConcurrentBag<ManifestInfo> rpList { get; set; } = new ConcurrentBag<ManifestInfo>();
+        public static ConcurrentBag<ManifestInfo> bpList { get; set; } = new ConcurrentBag<ManifestInfo>();
+        
+        public static List<ManifestInfo> currentlyActiveRpList { get; set; } = new List<ManifestInfo>();
+        public static List<ManifestInfo> currentlyActiveBpList { get; set; } = new List<ManifestInfo>();
+        
+        public static List<ManifestInfo> activeRpList { get; set; } = new List<ManifestInfo>();
+        public static List<ManifestInfo> activeBpList { get; set; } = new List<ManifestInfo>();
+        
+        public static List<ManifestInfo> inactiveRpList { get; set; } = new List<ManifestInfo>();
+        public static List<ManifestInfo> inactiveBpList { get; set; } = new List<ManifestInfo>();
 
         public List<ManifestInfo> GetList(string listName)
         {
-            switch (listName)
+            return listName switch
             {
-                case "inactiveRpList":
-                    return inactiveRpList;
-                case "inactiveBpList":
-                    return inactiveBpList;
-                case "activeRpList":
-                    return activeRpList;
-                case "activeBpList":
-                    return activeBpList;
-                default:
-                    throw new ArgumentException("Invalid list name");
-            }
+                "inactiveRpList" => inactiveRpList,
+                "inactiveBpList" => inactiveBpList,
+                "activeRpList" => activeRpList,
+                "activeBpList" => activeBpList,
+                _ => throw new ArgumentException("Invalid list name", nameof(listName)),
+            };
         }
     }
+    
     public static class ListExtensions
     {
-        // Extension method to move items in a list
         public static void Move<T>(this List<T> list, int oldIndex, int newIndex)
         {
+            if (oldIndex < 0 || oldIndex >= list.Count || newIndex < 0 || newIndex >= list.Count)
+                return; // Index out of bounds
+                
             T item = list[oldIndex];
             list.RemoveAt(oldIndex);
             list.Insert(newIndex, item);
         }
     }
+    
     public class JsonParser
     {
-        // Parses the world's resource and behavior pack JSON files
         public void ParseWorldJson()
         {
-            // Define the paths to the resource and behavior pack JSON files
             string rpJsonFilePath = Path.Combine(DirectoryForm.worldLocation, "world_resource_packs.json");
             string bpJsonFilePath = Path.Combine(DirectoryForm.worldLocation, "world_behavior_packs.json");
 
-            // Read the contents of the JSON files.
+            EnsureFileExists(rpJsonFilePath, "world_resource_packs.json");
+            EnsureFileExists(bpJsonFilePath, "world_behavior_packs.json");
+
             string rpJsonContent = File.ReadAllText(rpJsonFilePath);
             string bpJsonContent = File.ReadAllText(bpJsonFilePath);
 
-            // Parse the JSON content and populate the active resource and behavior pack lists
-            ParseManifestJson(rpJsonContent, ResultLists.currentlyActiveRpList);
-            ParseManifestJson(bpJsonContent, ResultLists.currentlyActiveBpList);
+            ResultLists.currentlyActiveRpList = ParseSimpleManifestJson(rpJsonContent);
+            ResultLists.currentlyActiveBpList = ParseSimpleManifestJson(bpJsonContent);
 
-            Logger.Log("Active world .json packs have been parsed!");
+            Logger.Log("Active world pack configurations have been parsed.");
         }
-        // Parses a manifest JSON string and populates a list with the parsed data
-        private void ParseManifestJson(string jsonContent, List<ManifestInfo> manifestList)
-        {
-            var manifestJson = JsonDocument.Parse(jsonContent);
 
-            foreach (var entry in manifestJson.RootElement.EnumerateArray())
+        private void EnsureFileExists(string path, string fileName)
+        {
+            if (!File.Exists(path))
             {
-                // Create a new ManifestInfo object and populate it with data from the JSON entry
-                var manifestInfo = new ManifestInfo { pack_id = entry.GetProperty("pack_id").GetGuid(), version = entry.GetProperty("version").EnumerateArray().Select(element => element.GetInt32()).ToArray() };
-                manifestList.Add(manifestInfo);
+                File.WriteAllText(path, "[]");
+                Logger.Log($"Created '{fileName}' as it was not found.");
             }
-            Logger.Log("Currently active lists have been populated!");
         }
-        // Parses the pack folders at a given path and populates a list with the parsed data
-        public void ParsePackFolder(string path, List<ManifestInfo> list)
+
+        private List<ManifestInfo> ParseSimpleManifestJson(string jsonContent)
         {
-            Parallel.ForEach(Directory.GetDirectories(path), (directory) =>
+            var list = new List<ManifestInfo>();
+            try
+            {
+                var manifestJson = JsonDocument.Parse(jsonContent);
+                foreach (var entry in manifestJson.RootElement.EnumerateArray())
                 {
-                    var manifestPath = Path.Combine(directory, "manifest.json");
-
-                    if (File.Exists(manifestPath))
+                    if (entry.TryGetProperty("pack_id", out var idElement) && idElement.TryGetGuid(out var guid) &&
+                        entry.TryGetProperty("version", out var versionElement))
                     {
-                        try
-                        {
-                            var manifestContent = File.ReadAllText(manifestPath);
-                            var manifestJson = JsonDocument.Parse(manifestContent);
-                            Image fallbackIcon = Properties.Resources.pack_icon_fallback;
-
-                            // If the JSON content contains a 'header' property, collect the pack properties
-                            if (manifestJson.RootElement.TryGetProperty("header", out var header))
-                            {
-                                var manifestInfo = new ManifestInfo
-                                {
-                                    pack_folder = directory,
-                                    name = header.GetProperty("name").GetString(),
-                                    description = header.GetProperty("description").GetString(),
-                                    pack_id = header.GetProperty("uuid").GetGuid(),
-                                    version = header.GetProperty("version").EnumerateArray().Select(element => element.GetInt32()).ToArray()
-                                };
-                                // Check if the JSON content contains a 'modules' property
-                                if (manifestJson.RootElement.TryGetProperty("modules", out var modules))
-                                {
-                                    // Iterate over each object in the 'modules' array
-                                    foreach (var module in modules.EnumerateArray())
-                                    {
-                                        // Get the 'type' property from each object in the 'modules' array
-                                        if (module.TryGetProperty("type", out var type))
-                                        {
-                                            manifestInfo.type = type.GetString();
-                                        }
-                                    }
-                                }
-                                try
-                                {
-                                    // Attempt to load the pack icon.
-                                    using (Image temp = Image.FromFile(Path.Combine(directory, "pack_icon.png")))
-                                    {
-                                        manifestInfo.pack_icon = new Bitmap(temp);
-                                    }
-                                }
-                                catch (Exception)
-                                {
-                                    manifestInfo.pack_icon = fallbackIcon;
-                                    Logger.Log("No pack icon was found for pack: " + manifestInfo.name);
-                                }
-                                lock (list) { list.Add(manifestInfo); }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Debug.WriteLine("Error parsing manifest: " + ex.Message);
-                            Logger.Log("Invalid manifest file was found and was could not be parsed.", "WARN");
-                        }
+                        var versionArray = versionElement.EnumerateArray().Select(e => e.GetInt32()).ToArray();
+                        list.Add(new ManifestInfo { pack_id = guid, version = versionArray });
                     }
                 }
-            );
-            StringCleaner(list);
-            GetInactivePacks();
-            GetActivePacks();
+            }
+            catch(JsonException ex)
+            {
+                Logger.Log($"Failed to parse simple manifest JSON. Error: {ex.Message}", "ERROR");
+            }
+            return list;
         }
+
+        public void ParsePackFolder(string path, ConcurrentBag<ManifestInfo> list)
+        {
+            if (!Directory.Exists(path))
+            {
+                Logger.Log($"Pack directory not found: {path}", "ERROR");
+                return;
+            }
+            
+            Parallel.ForEach(Directory.GetDirectories(path), (directory) =>
+            {
+                var manifestPath = Path.Combine(directory, "manifest.json");
+                if (File.Exists(manifestPath))
+                {
+                    try
+                    {
+                        var manifestContent = File.ReadAllText(manifestPath);
+                        var manifestJson = JsonDocument.Parse(manifestContent);
+                        Image fallbackIcon = Properties.Resources.pack_icon_fallback;
+
+                        if (manifestJson.RootElement.TryGetProperty("header", out var header))
+                        {
+                            var manifestInfo = new ManifestInfo
+                            {
+                                pack_folder = directory,
+                                name = header.TryGetProperty("name", out var n) ? n.GetString() : "Unknown Name",
+                                description = header.TryGetProperty("description", out var d) ? d.GetString() : "No description.",
+                                pack_id = header.TryGetProperty("uuid", out var u) && u.TryGetGuid(out var guid) ? guid : Guid.Empty,
+                                version = header.TryGetProperty("version", out var v) ? v.EnumerateArray().Select(e => e.GetInt32()).ToArray() : new int[0]
+                            };
+
+                            if (manifestJson.RootElement.TryGetProperty("modules", out var modules))
+                            {
+                                manifestInfo.type = modules.EnumerateArray()
+                                    .Select(m => m.TryGetProperty("type", out var t) ? t.GetString() : null)
+                                    .FirstOrDefault();
+                            }
+                            
+                            try
+                            {
+                                using (Image temp = Image.FromFile(Path.Combine(directory, "pack_icon.png")))
+                                {
+                                    manifestInfo.pack_icon = new Bitmap(temp);
+                                }
+                            }
+                            catch (FileNotFoundException)
+                            {
+                                manifestInfo.pack_icon = fallbackIcon;
+                            }
+                            catch (Exception)
+                            {
+                                manifestInfo.pack_icon = fallbackIcon;
+                                Logger.Log($"Could not load pack icon for '{manifestInfo.name}'. Using fallback.");
+                            }
+                            
+                            // No lock needed as we're adding to a ConcurrentBag
+                            list.Add(manifestInfo);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"Error parsing manifest in {directory}: {ex.Message}");
+                        Logger.Log($"Invalid manifest file found in '{Path.GetFileName(directory)}'. It could not be parsed.", "WARN");
+                    }
+                }
+            });
+            
+            // This part should be called AFTER both ParsePackFolder calls are complete.
+            // It's better to move this logic out of ParsePackFolder.
+        }
+
+        // This method should be called after both resource and behavior pack folders have been parsed.
+        public void FinalizePackLists()
+        {
+            var rpListFinal = ResultLists.rpList.ToList();
+            var bpListFinal = ResultLists.bpList.ToList();
+            
+            StringCleaner(rpListFinal);
+            StringCleaner(bpListFinal);
+
+            GetInactivePacks(rpListFinal, bpListFinal);
+            GetActivePacks(rpListFinal, bpListFinal);
+        }
+
         private void StringCleaner(List<ManifestInfo> list)
         {
-            // Remove '§' symbol and the next character (Bedrock text modifier codes)
-            if (!SettingsForm.disableStringCleaner)
+            if (SettingsForm.disableStringCleaner)
             {
-                string RemoveSectionSignAndNextChar(string input)
-                {
-                    return Regex.Replace(input, @"§.", string.Empty);
-                }
+                Logger.Log("Pack name cleaning has been disabled.");
+                return;
+            }
 
-                foreach (var manifestInfo in list)
-                {
-                    manifestInfo.name = RemoveSectionSignAndNextChar(manifestInfo.name);
-                    manifestInfo.description = RemoveSectionSignAndNextChar(manifestInfo.description);
-                }
-                Logger.Log("Removed Bedrock color code modifiers from pack names!");
-            }
-            else
+            foreach (var manifestInfo in list)
             {
-                Logger.Log("Pack name cleaning has been disabled!");
+                if (manifestInfo.name != null)
+                    manifestInfo.name = Regex.Replace(manifestInfo.name, @"§.", string.Empty);
+                if (manifestInfo.description != null)
+                    manifestInfo.description = Regex.Replace(manifestInfo.description, @"§.", string.Empty);
             }
+            Logger.Log("Removed Bedrock color code modifiers from pack names.");
         }
-        private void GetInactivePacks()
+
+        private void GetInactivePacks(List<ManifestInfo> allRp, List<ManifestInfo> allBp)
         {
-            // Compares each pack in the full list with the active list. If a pack is not found in the active list (based on both pack_id and version), it is considered inactive and added to the inactive list
-            ResultLists.inactiveRpList = ResultLists.rpList.Where(rp => !ResultLists.currentlyActiveRpList.Any(activeRp => activeRp.pack_id == rp.pack_id && Enumerable.SequenceEqual(activeRp.version, rp.version))).ToList();
-            ResultLists.inactiveBpList = ResultLists.bpList.Where(bp => !ResultLists.currentlyActiveBpList.Any(activeBp => activeBp.pack_id == bp.pack_id && Enumerable.SequenceEqual(activeBp.version, bp.version))).ToList();
-            Logger.Log("Inactive lists populated!");
+            var activeRpSet = ResultLists.currentlyActiveRpList.Select(p => p.pack_id).ToHashSet();
+            var activeBpSet = ResultLists.currentlyActiveBpList.Select(p => p.pack_id).ToHashSet();
+
+            ResultLists.inactiveRpList = allRp.Where(rp => !activeRpSet.Contains(rp.pack_id)).ToList();
+            ResultLists.inactiveBpList = allBp.Where(bp => !activeBpSet.Contains(bp.pack_id)).ToList();
+            Logger.Log("Inactive pack lists populated.");
         }
-        private void GetActivePacks()
+
+        private void GetActivePacks(List<ManifestInfo> allRp, List<ManifestInfo> allBp)
         {
-            ResultLists.activeRpList = ResultLists.rpList.Where(rp => ResultLists.currentlyActiveRpList.Any(activeRp => activeRp.pack_id == rp.pack_id && Enumerable.SequenceEqual(activeRp.version, rp.version))).ToList();
-            ResultLists.activeBpList = ResultLists.bpList.Where(bp => ResultLists.currentlyActiveBpList.Any(activeBp => activeBp.pack_id == bp.pack_id && Enumerable.SequenceEqual(activeBp.version, bp.version))).ToList();
-            Logger.Log("Active lists populated!");
-            SortAndFilterActiveRpList();
-            SortAndFilterActiveBpList();
+            ResultLists.activeRpList = SortAndFilterActiveList(allRp, ResultLists.currentlyActiveRpList);
+            ResultLists.activeBpList = SortAndFilterActiveList(allBp, ResultLists.currentlyActiveBpList);
+            Logger.Log("Active pack lists populated and sorted.");
         }
-        private void SortAndFilterActiveRpList()
+
+        // Highly optimized sorting method
+        private List<ManifestInfo> SortAndFilterActiveList(List<ManifestInfo> allPacks, List<ManifestInfo> activePackOrder)
         {
-            // Create a HashSet for fast lookup of GUIDs in the currentlyActiveList
-            var activePackIds = new HashSet<Guid>(ResultLists.currentlyActiveRpList.Select(pack => pack.pack_id.Value));
-            ResultLists.activeRpList = ResultLists.activeRpList.Where(pack => activePackIds.Contains(pack.pack_id.Value)).OrderBy(pack => ResultLists.currentlyActiveRpList.FindIndex(activePack => activePack.pack_id.Value == pack.pack_id.Value)).ToList();
+            if (activePackOrder == null || !activePackOrder.Any())
+                return new List<ManifestInfo>();
+
+            // Create a dictionary for O(1) lookup of pack order.
+            var orderLookup = activePackOrder
+                .Select((pack, index) => new { pack.pack_id, index })
+                .ToDictionary(p => p.pack_id, p => p.index);
+            
+            return allPacks
+                .Where(pack => pack.pack_id.HasValue && orderLookup.ContainsKey(pack.pack_id.Value))
+                .OrderBy(pack => orderLookup[pack.pack_id.Value])
+                .ToList();
         }
-        private void SortAndFilterActiveBpList()
-        {
-            var activePackIds = new HashSet<Guid>(ResultLists.currentlyActiveBpList.Select(pack => pack.pack_id.Value));
-            ResultLists.activeBpList = ResultLists.activeBpList.Where(pack => activePackIds.Contains(pack.pack_id.Value)).OrderBy(pack => ResultLists.currentlyActiveBpList.FindIndex(activePack => activePack.pack_id == pack.pack_id)).ToList();
-        }
+        
         public static void SaveToJson()
         {
-            // Create a temporary list to hold only the pack_id and version
-            var tempRpListToSave = ResultLists.activeRpList.Select(pack => new { pack.pack_id, pack.version }).ToList();
-            var tempBpListToSave = ResultLists.activeBpList.Select(pack => new { pack.pack_id, pack.version }).ToList();
+            var rpListToSave = ResultLists.activeRpList.Select(p => new { p.pack_id, p.version }).ToList();
+            var bpListToSave = ResultLists.activeBpList.Select(p => new { p.pack_id, p.version }).ToList();
 
             string rpJsonPath = Path.Combine(DirectoryForm.worldLocation, "world_resource_packs.json");
             string bpJsonPath = Path.Combine(DirectoryForm.worldLocation, "world_behavior_packs.json");
+            
+            var options = new JsonSerializerOptions { WriteIndented = true };
 
-            // Serialize and save the projected resource packs list
-            string rpJsonData = JsonSerializer.Serialize(tempRpListToSave, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(rpJsonPath, rpJsonData);
-            Logger.Log("world_resource_packs.json has been written to disk!");
-
-            // Serialize and save the projected behavior packs list
-            string bpJsonData = JsonSerializer.Serialize(tempBpListToSave, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(bpJsonPath, bpJsonData);
-            Logger.Log("world_behavior_packs.json has been written to disk!");
+            try
+            {
+                File.WriteAllText(rpJsonPath, JsonSerializer.Serialize(rpListToSave, options));
+                Logger.Log("world_resource_packs.json has been written to disk.");
+                
+                File.WriteAllText(bpJsonPath, JsonSerializer.Serialize(bpListToSave, options));
+                Logger.Log("world_behavior_packs.json has been written to disk.");
+            }
+            catch (Exception ex)
+            {
+                // Rethrow the exception so the UI can catch it and display a message.
+                throw new IOException($"Failed to write to JSON files. Please check file permissions. Details: {ex.Message}", ex);
+            }
         }
     }
 }

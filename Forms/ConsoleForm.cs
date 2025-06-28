@@ -3,62 +3,86 @@ namespace AddonManager.Forms
 {
     public partial class ConsoleForm : Form
     {
-        private RichTextBox consoleOutput;
+        private readonly RichTextBox consoleOutput;
 
         public ConsoleForm()
         {
             InitializeComponent();
-            InitializeConsoleOutput();
+            consoleOutput = new RichTextBox
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.Black,
+                ForeColor = Color.LightBlue,
+                Font = new Font("Consolas", 10),
+                ReadOnly = true, // Prevent user from editing logs
+                BorderStyle = BorderStyle.None
+            };
+            this.Controls.Add(consoleOutput);
             this.Text = "CONSOLE LOGS";
             RefreshLogs();
         }
-        // Creates a console styled textbox
-        private void InitializeConsoleOutput()
-        {
-            consoleOutput = new RichTextBox();
-            consoleOutput.Dock = DockStyle.Fill;
-            consoleOutput.BackColor = Color.Black;
-            consoleOutput.ForeColor = Color.LightBlue;
-            consoleOutput.Font = new Font("Consolas", 10);
-            this.Controls.Add(consoleOutput);
-        }
+
         // Refreshes the console output with the latest logs, color-coding each log based on its level
+        // This version is optimized for performance with large amounts of logs.
         public void RefreshLogs()
         {
+            // Suspend drawing to prevent flickering and improve performance
+            consoleOutput.SuspendLayout();
             consoleOutput.Clear();
-            foreach (string log in Logger.GetLogs())
+
+            var logs = Logger.GetLogs();
+            if (logs == null)
             {
-                //Append the log to the consoleOutput
+                consoleOutput.ResumeLayout();
+                return;
+            }
+
+            foreach (string log in logs)
+            {
+                if (string.IsNullOrEmpty(log)) continue;
+
+                // Store current text length to calculate selection start later
+                int selectionStart = consoleOutput.TextLength;
                 consoleOutput.AppendText(log + Environment.NewLine);
 
-                //Get the start and end brackets of the label
-                int start = log.IndexOf('['); 
-                int end = log.IndexOf(']');
+                // Find the log level label brackets robustly
+                int openBracketIndex = log.IndexOf('[');
+                int closeBracketIndex = log.IndexOf(']');
 
-                //Select the level label
-                consoleOutput.Select(consoleOutput.TextLength - log.Length + start - 1, end - start + 1);
-
-                //Change the color of the selected text depending on its severity level
-                string level = log.Substring(start + 1, end - start - 1); 
-                switch (level)
+                // Proceed only if a valid [LEVEL] tag is found
+                if (openBracketIndex != -1 && closeBracketIndex > openBracketIndex)
                 {
-                    case "INFO":
-                        consoleOutput.SelectionColor = Color.Cyan;
-                        break;
-                    case "WARN":
-                        consoleOutput.SelectionColor = Color.Yellow;
-                        break;
-                    case "ERROR":
-                        consoleOutput.SelectionColor = Color.Red;
-                        break;
-                    default:
-                        consoleOutput.SelectionColor = Color.White;
-                        break;
+                    string level = log.Substring(openBracketIndex + 1, closeBracketIndex - openBracketIndex - 1);
+                    Color levelColor;
+
+                    switch (level)
+                    {
+                        case "INFO":
+                            levelColor = Color.Cyan;
+                            break;
+                        case "WARN":
+                            levelColor = Color.Yellow;
+                            break;
+                        case "ERROR":
+                            levelColor = Color.Red;
+                            break;
+                        default:
+                            levelColor = Color.White;
+                            break;
+                    }
+
+                    // Select the [LEVEL] part and change its color
+                    consoleOutput.Select(selectionStart + openBracketIndex, closeBracketIndex - openBracketIndex + 1);
+                    consoleOutput.SelectionColor = levelColor;
                 }
-                //Deselect the text
-                consoleOutput.Select(consoleOutput.TextLength, 0);
             }
+
+            // Deselect all text and scroll to the end
+            consoleOutput.Select(consoleOutput.TextLength, 0);
             consoleOutput.ScrollToCaret();
+
+            // Resume drawing now that all updates are complete
+            consoleOutput.ResumeLayout();
         }
     }
 }

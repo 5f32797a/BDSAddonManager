@@ -1,17 +1,24 @@
-﻿
+﻿using System.Collections.Concurrent;
+
 namespace AddonManager
 {
     public static class Logger
     {
-        private static List<string> logs = new List<string>();
+        // Use a thread-safe collection for logs to prevent race conditions
+        // when logging from multiple threads (e.g., Parallel.ForEach).
+        private static readonly ConcurrentBag<string> logs = new ConcurrentBag<string>();
 
         public static void Log(string message, string level = "INFO")
         {
-            logs.Add($"[{level}] {message}");
+            // The timestamp provides more context for debugging.
+            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            logs.Add($"{timestamp} [{level}] {message}");
         }
+        
+        // Returns a snapshot of the logs.
         public static List<string> GetLogs()
         {
-            return logs;
+            return logs.ToList();
         }
     }
 }

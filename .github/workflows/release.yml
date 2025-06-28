@@ -1,0 +1,37 @@
+name: .NET Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write # Required to create a release
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore AddonManager.sln
+
+    - name: Build and publish
+      run: dotnet publish AddonManager.csproj --configuration Release -p:PublishSingleFile=true --output ./publish
+      
+    - name: Get Project Name
+      id: get_project_name
+      run: echo "PROJECT_NAME=$((Get-Item AddonManager.csproj).BaseName)" >> $env:GITHUB_OUTPUT
+      shell: pwsh
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: ./publish/${{ steps.get_project_name.outputs.PROJECT_NAME }}.exe 
